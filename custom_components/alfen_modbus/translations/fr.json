@@ -11,7 +11,10 @@
           "modbus_address": "Adresse Modbus",
           "read_scn": "Lire le SCN",
           "read_socket_2": "Lire la prise 2",
-          "scan_interval": "Intervalle d’interrogation"
+          "scan_interval": "Intervalle d’interrogation",
+          "poll_idle_interval": "Idle/disconnected polling interval",
+          "poll_connected_interval": "Connected/fast control polling interval",
+          "poll_statistics_interval": "Statistics polling interval"
         },
         "data_description": {
           "host": "L’adresse IP ou le nom d’hôte de votre appareil Alfen",
@@ -20,7 +23,10 @@
           "modbus_address": "Adresse esclave Modbus (par défaut : 200)",
           "read_scn": "Activer les registres Smart Charging Network",
           "read_socket_2": "Activer la prise 2 pour les unités à double prise",
-          "scan_interval": "Intervalle d’interrogation en secondes"
+          "scan_interval": "Intervalle d’interrogation en secondes",
+          "poll_idle_interval": "Polling interval in seconds when no car is connected",
+          "poll_connected_interval": "Polling interval in seconds for connected fast control (status, Current L1, real power)",
+          "poll_statistics_interval": "Polling interval in seconds for real energy statistics"
         }
       }
     },
@@ -43,14 +49,20 @@
           "port": "Port",
           "read_scn": "Lire le SCN",
           "read_socket_2": "Lire la prise 2",
-          "scan_interval": "Intervalle d’interrogation"
+          "scan_interval": "Intervalle d’interrogation",
+          "poll_idle_interval": "Idle/disconnected polling interval",
+          "poll_connected_interval": "Connected/fast control polling interval",
+          "poll_statistics_interval": "Statistics polling interval"
         },
         "data_description": {
           "host": "L’adresse IP ou le nom d’hôte de votre appareil Alfen",
           "port": "Port TCP (par défaut : 502)",
           "read_scn": "Activer les registres Smart Charging Network",
           "read_socket_2": "Activer la prise 2 pour les unités à double prise",
-          "scan_interval": "Intervalle d’interrogation en secondes"
+          "scan_interval": "Intervalle d’interrogation en secondes",
+          "poll_idle_interval": "Polling interval in seconds when no car is connected",
+          "poll_connected_interval": "Polling interval in seconds for connected fast control (status, Current L1, real power)",
+          "poll_statistics_interval": "Polling interval in seconds for real energy statistics"
         }
       }
     },
