@@ -10,10 +10,16 @@ from pymodbus.client import ModbusTcpClient
 
 from .const import (
     CONF_MODBUS_ADDRESS,
+    CONF_POLL_CONNECTED_INTERVAL,
+    CONF_POLL_IDLE_INTERVAL,
+    CONF_POLL_STATISTICS_INTERVAL,
     CONF_READ_SCN,
     CONF_READ_SOCKET2,
     DEFAULT_MODBUS_ADDRESS,
     DEFAULT_NAME,
+    DEFAULT_POLL_CONNECTED_INTERVAL,
+    DEFAULT_POLL_IDLE_INTERVAL,
+    DEFAULT_POLL_STATISTICS_INTERVAL,
     DEFAULT_PORT,
     DEFAULT_READ_SCN,
     DEFAULT_READ_SOCKET2,
@@ -32,6 +38,15 @@ DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_READ_SCN, default=DEFAULT_READ_SCN): bool,
         vol.Optional(CONF_READ_SOCKET2, default=DEFAULT_READ_SOCKET2): bool,
         vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL): int,
+        vol.Optional(
+            CONF_POLL_IDLE_INTERVAL, default=DEFAULT_POLL_IDLE_INTERVAL
+        ): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        vol.Optional(
+            CONF_POLL_CONNECTED_INTERVAL, default=DEFAULT_POLL_CONNECTED_INTERVAL
+        ): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        vol.Optional(
+            CONF_POLL_STATISTICS_INTERVAL, default=DEFAULT_POLL_STATISTICS_INTERVAL
+        ): vol.All(vol.Coerce(int), vol.Range(min=1)),
     }
 )
 
@@ -167,10 +182,29 @@ class AlfenModbusOptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_READ_SOCKET2, DEFAULT_READ_SOCKET2
                     ),
                 ): bool,
+                vol.Optional(
+                    CONF_POLL_IDLE_INTERVAL,
+                    default=self.config_entry.data.get(
+                        CONF_POLL_IDLE_INTERVAL, DEFAULT_POLL_IDLE_INTERVAL
+                    ),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1)),
+                vol.Optional(
+                    CONF_POLL_CONNECTED_INTERVAL,
+                    default=self.config_entry.data.get(
+                        CONF_POLL_CONNECTED_INTERVAL,
+                        DEFAULT_POLL_CONNECTED_INTERVAL,
+                    ),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1)),
+                vol.Optional(
+                    CONF_POLL_STATISTICS_INTERVAL,
+                    default=self.config_entry.data.get(
+                        CONF_POLL_STATISTICS_INTERVAL,
+                        DEFAULT_POLL_STATISTICS_INTERVAL,
+                    ),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1)),
             }
         )
 
         return self.async_show_form(
             step_id="init", data_schema=options_schema, errors=errors
         )
-

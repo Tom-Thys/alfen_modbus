@@ -11,7 +11,10 @@
           "modbus_address": "Modbus-adresse",
           "read_scn": "Læs SCN",
           "read_socket_2": "Læs stik 2",
-          "scan_interval": "Pollingsinterval"
+          "scan_interval": "Pollingsinterval",
+          "poll_idle_interval": "Idle/disconnected polling interval",
+          "poll_connected_interval": "Connected/fast control polling interval",
+          "poll_statistics_interval": "Statistics polling interval"
         },
         "data_description": {
           "host": "IP-adressen eller værtsnavnet på din Alfen-enhed",
@@ -20,7 +23,10 @@
           "modbus_address": "Modbus-slaveadresse (standard: 200)",
           "read_scn": "Aktivér Smart Charging Network-registre",
           "read_socket_2": "Aktivér stik 2 til enheder med to stik",
-          "scan_interval": "Pollingsinterval i sekunder"
+          "scan_interval": "Pollingsinterval i sekunder",
+          "poll_idle_interval": "Polling interval in seconds when no car is connected",
+          "poll_connected_interval": "Polling interval in seconds for connected fast control (status, Current L1, real power)",
+          "poll_statistics_interval": "Polling interval in seconds for real energy statistics"
         }
       }
     },
@@ -43,14 +49,20 @@
           "port": "Port",
           "read_scn": "Læs SCN",
           "read_socket_2": "Læs stik 2",
-          "scan_interval": "Pollingsinterval"
+          "scan_interval": "Pollingsinterval",
+          "poll_idle_interval": "Idle/disconnected polling interval",
+          "poll_connected_interval": "Connected/fast control polling interval",
+          "poll_statistics_interval": "Statistics polling interval"
         },
         "data_description": {
           "host": "IP-adressen eller værtsnavnet på din Alfen-enhed",
           "port": "TCP-port (standard: 502)",
           "read_scn": "Aktivér Smart Charging Network-registre",
           "read_socket_2": "Aktivér stik 2 til enheder med to stik",
-          "scan_interval": "Pollingsinterval i sekunder"
+          "scan_interval": "Pollingsinterval i sekunder",
+          "poll_idle_interval": "Polling interval in seconds when no car is connected",
+          "poll_connected_interval": "Polling interval in seconds for connected fast control (status, Current L1, real power)",
+          "poll_statistics_interval": "Polling interval in seconds for real energy statistics"
         }
       }
     },

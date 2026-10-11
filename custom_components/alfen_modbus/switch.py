@@ -82,7 +82,6 @@ class AlfenChargerEnabledSwitch(AlfenEntity, SwitchEntity):
             unit=self._socket, address=MAX_CURRENT_REGISTER, payload=payload
         )
         self._hub.data[self._key] = value
-        self.hass.async_create_task(self._hub.async_refresh_modbus_data())
         self.async_write_ha_state()
 
     async def async_turn_on(self, **kwargs) -> None:

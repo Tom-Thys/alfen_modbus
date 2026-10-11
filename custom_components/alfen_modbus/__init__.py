@@ -17,10 +17,16 @@ from pymodbus.exceptions import ModbusException
 
 from .const import (
     CONF_MODBUS_ADDRESS,
+    CONF_POLL_CONNECTED_INTERVAL,
+    CONF_POLL_IDLE_INTERVAL,
+    CONF_POLL_STATISTICS_INTERVAL,
     CONF_READ_SCN,
     CONF_READ_SOCKET2,
     DEFAULT_MODBUS_ADDRESS,
     DEFAULT_NAME,
+    DEFAULT_POLL_CONNECTED_INTERVAL,
+    DEFAULT_POLL_IDLE_INTERVAL,
+    DEFAULT_POLL_STATISTICS_INTERVAL,
     DEFAULT_READ_SCN,
     DEFAULT_READ_SOCKET2,
     DEFAULT_SCAN_INTERVAL,
@@ -51,6 +57,15 @@ ALFEN_MODBUS_SCHEMA = vol.Schema(
         vol.Optional(
             CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
         ): cv.positive_int,
+        vol.Optional(
+            CONF_POLL_IDLE_INTERVAL, default=DEFAULT_POLL_IDLE_INTERVAL
+        ): cv.positive_int,
+        vol.Optional(
+            CONF_POLL_CONNECTED_INTERVAL, default=DEFAULT_POLL_CONNECTED_INTERVAL
+        ): cv.positive_int,
+        vol.Optional(
+            CONF_POLL_STATISTICS_INTERVAL, default=DEFAULT_POLL_STATISTICS_INTERVAL
+        ): cv.positive_int,
     }
 )
 
@@ -58,7 +73,7 @@ CONFIG_SCHEMA = vol.Schema(
     {DOMAIN: vol.Schema({cv.slug: ALFEN_MODBUS_SCHEMA})}, extra=vol.ALLOW_EXTRA
 )
 
-PLATFORMS = ["binary_sensor", "number", "select", "sensor", "switch"]
+PLATFORMS = ["binary_sensor", "number", "sensor", "switch"]
 
 type AlfenConfigEntry = ConfigEntry[AlfenModbusHub]
 
@@ -75,6 +90,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlfenConfigEntry):
     port = entry.data[CONF_PORT]
     address = entry.data.get(CONF_MODBUS_ADDRESS, 1)
     scan_interval = entry.data[CONF_SCAN_INTERVAL]
+    poll_idle_interval = entry.data.get(
+        CONF_POLL_IDLE_INTERVAL, DEFAULT_POLL_IDLE_INTERVAL
+    )
+    poll_connected_interval = entry.data.get(
+        CONF_POLL_CONNECTED_INTERVAL, DEFAULT_POLL_CONNECTED_INTERVAL
+    )
+    poll_statistics_interval = entry.data.get(
+        CONF_POLL_STATISTICS_INTERVAL, DEFAULT_POLL_STATISTICS_INTERVAL
+    )
     read_scn = entry.data.get(CONF_READ_SCN, False)
     read_socket2 = entry.data.get(CONF_READ_SOCKET2, False)
 
@@ -87,6 +111,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlfenConfigEntry):
         port,
         address,
         scan_interval,
+        poll_idle_interval,
+        poll_connected_interval,
+        poll_statistics_interval,
         read_scn,
         read_socket2
     )
@@ -155,6 +182,9 @@ class AlfenModbusHub:
         port,
         address,
         scan_interval,
+        poll_idle_interval,
+        poll_connected_interval,
+        poll_statistics_interval,
         read_scn=False,
         read_socket_2=False
     ):
@@ -167,12 +197,27 @@ class AlfenModbusHub:
         self.read_scn = read_scn
         self.read_socket_2 = read_socket_2
         self._refreshInterval = scan_interval
-        self._scan_interval = timedelta(seconds=scan_interval)
+        self._poll_idle_interval = poll_idle_interval
+        self._poll_connected_interval = poll_connected_interval
+        self._poll_statistics_interval = poll_statistics_interval
+        self._scan_interval = timedelta(
+            seconds=min(
+                self._poll_idle_interval,
+                self._poll_connected_interval,
+                self._poll_statistics_interval,
+            )
+        )
         self._unsub_interval_method = None
         self._sensors = []
         self._inputs = []
         self.data = {}
         self._closing = False
+        self._polling = False
+        self._product_data_loaded = False
+        self._station_data_loaded = False
+        self._last_status_poll = 0.0
+        self._last_statistics_poll = 0.0
+        self._zero_power_since = None
 
     @callback
     def async_add_alfen_sensor(self, update_callback, refresh_callback = None):
@@ -219,14 +264,17 @@ class AlfenModbusHub:
 
     async def async_refresh_modbus_data(self, _now: int | None = None) -> None:
         """Time to update."""
-        if not self._sensors:
+        if not self._sensors or self._polling:
             return
 
+        self._polling = True
         try:
             update_result = await self.read_modbus_data()
         except Exception:
             _LOGGER.exception("Error reading modbus data")
             update_result = False
+        finally:
+            self._polling = False
 
         if update_result:
             for update_callback in self._sensors:
@@ -337,7 +385,12 @@ class AlfenModbusHub:
         key2 = VALID_TIME_S + "2"
         if key1 not in self.data:
             return
-        if int(self.data[key1]) < self._refreshInterval+10 or (self.has_socket_2 and key2 in self.data and int(self.data[key2]) < self._refreshInterval+10):
+        refresh_interval = self._poll_connected_interval
+        if int(self.data[key1]) < refresh_interval + 10 or (
+            self.has_socket_2
+            and key2 in self.data
+            and int(self.data[key2]) < refresh_interval + 10
+        ):
             for update_callback in self._inputs:
                 # Schedule async callbacks as tasks
                 result = update_callback()
@@ -349,19 +402,151 @@ class AlfenModbusHub:
     async def read_modbus_data(self):
         if self._closing:
             return False
-        return (
-            await self.read_modbus_data_product()
-            and await self.read_modbus_data_station()
-            and await self.read_modbus_data_scn()
-            and await self.read_modbus_data_socket(1)
-            and await self.read_modbus_data_socket(2)            
+
+        if not self._product_data_loaded:
+            if not await self.read_modbus_data_product():
+                return False
+            self._product_data_loaded = True
+
+        if not self._station_data_loaded:
+            if not await self.read_modbus_data_station():
+                return False
+            self._station_data_loaded = True
+
+        self._update_station_time()
+
+        now = asyncio.get_running_loop().time()
+        self._update_zero_power_timer(now)
+        status_interval = (
+            self._poll_connected_interval
+            if self._any_car_connected()
+            else self._poll_idle_interval
         )
+        if self._should_use_low_power_interval(now):
+            status_interval = min(self._poll_idle_interval, 30)
+        status_due = (
+            self._last_status_poll == 0.0
+            or now - self._last_status_poll >= status_interval
+        )
+        statistics_due = (
+            self._last_statistics_poll == 0.0
+            or now - self._last_statistics_poll >= self._poll_statistics_interval
+        )
+
+        if not status_due and not statistics_due:
+            return False
+
+        if status_due:
+            if not await self.read_modbus_data_socket_status(1):
+                return False
+            if not await self.read_modbus_data_socket_status(2):
+                return False
+            self._last_status_poll = now
+
+            if self._any_car_connected():
+                if not await self.read_modbus_data_socket_fast(1):
+                    return False
+                if not await self.read_modbus_data_socket_fast(2):
+                    return False
+            elif not await self.read_modbus_data_station():
+                return False
+
+        if statistics_due:
+            if not await self.read_modbus_data_socket_statistics(1):
+                return False
+            if not await self.read_modbus_data_socket_statistics(2):
+                return False
+            if not await self.read_modbus_data_scn():
+                return False
+            self._last_statistics_poll = now
+
+        return True
 
     def decode_string(self, decoder,length):
         s = decoder.decode_string(length*2)  # get 32 char string
         s = s.partition(b"\0")[0]  # omit NULL terminators
         s = s.decode("utf-8")  # decode UTF-8
         return str(s)
+
+    def _socket_enabled(self, socket):
+        if socket == 1:
+            return True
+        if socket != 2 or not self.has_socket_2:
+            return False
+        return self.data.get("numberOfSockets", 2) >= 2
+
+    def _update_station_time(self):
+        if "stationTime" in self.data:
+            tzinfo = self.data["stationTime"].tzinfo
+            self.data["stationTime"] = datetime.now(tz=tzinfo).replace(microsecond=0)
+
+    def _any_car_connected(self):
+        sockets = [1, 2] if self.has_socket_2 else [1]
+        return any(self.data.get(f"socket_{socket}_carconnected") == 1 for socket in sockets)
+
+    def _connected_sockets(self):
+        sockets = [1, 2] if self.has_socket_2 else [1]
+        return [socket for socket in sockets if self.data.get(f"socket_{socket}_carconnected") == 1]
+
+    def _is_low_power_connected(self):
+        connected_sockets = self._connected_sockets()
+        if not connected_sockets:
+            return False
+
+        for socket in connected_sockets:
+            max_key = MAX_CURRENT_S + str(socket)
+            power_key = f"socket_{socket}_realPowerSum"
+            if max_key not in self.data or power_key not in self.data:
+                return False
+            if self.data[max_key] >= 6 or abs(self.data[power_key]) > 0.1:
+                return False
+        return True
+
+    def _update_zero_power_timer(self, now):
+        if self._is_low_power_connected():
+            if self._zero_power_since is None:
+                self._zero_power_since = now
+        else:
+            self._zero_power_since = None
+
+    def _should_use_low_power_interval(self, now):
+        if self._zero_power_since is None:
+            return False
+        return now - self._zero_power_since >= 30
+
+    def _update_session_data(self, socket):
+        prefix = f"socket_{socket}_"
+        if self.data.get(prefix + "carconnected") == 0:
+            self.data.pop(prefix + "chargingStartWh", None)
+            self.data.pop(prefix + "chargingStart", None)
+            self.data.pop(prefix + "currentSession", None)
+            self.data.pop(prefix + "currentSessionDuration", None)
+            return
+
+        if (
+            prefix + "chargingStartWh" not in self.data
+            and prefix + "realEnergyDeliveredSum" in self.data
+        ):
+            self.data[prefix + "chargingStartWh"] = self.data[prefix + "realEnergyDeliveredSum"]
+            if "stationTime" in self.data:
+                self.data[prefix + "chargingStart"] = self.data["stationTime"]
+
+        if (
+            prefix + "chargingStartWh" in self.data
+            and prefix + "realEnergyDeliveredSum" in self.data
+        ):
+            self.data[prefix + "currentSession"] = (
+                self.data[prefix + "realEnergyDeliveredSum"]
+                - self.data[prefix + "chargingStartWh"]
+            )
+
+        if (
+            prefix + "chargingStart" in self.data
+            and "stationTime" in self.data
+        ):
+            self.data[prefix + "currentSessionDuration"] = (
+                self.data["stationTime"] - self.data[prefix + "chargingStart"]
+            )
 
     def decode_from_registers(self, registers, offset, count, data_type):
         return self._client.convert_from_registers(registers[offset:offset+count], data_type=data_type, word_order='big')
@@ -406,131 +591,137 @@ class AlfenModbusHub:
             self.data["scnMaxCurrentEnabled"] = self.decode_from_registers(status_data.registers,31,1,self._client.DATATYPE.UINT16)
         return True
         
-    async def read_modbus_data_socket(self,socket):
-        if((socket == 1) or (socket == 2 and self.has_socket_2 and self.data["numberOfSockets"] >= 2)):
-            # Block is 300-425 (126 registers): exceeds the FC3 125-register
-            # limit, so read as two value-aligned chunks. Split at 362 lands
-            # after Reactive Power Sum (360-361) and before the first FLOAT64.
-            energy_registers = await self.read_holding_registers_split(
-                socket, [(300, 62), (362, 64)]
+    async def read_modbus_data_socket_status(self, socket):
+        if not self._socket_enabled(socket):
+            return True
+
+        status_data = await self.read_holding_registers(socket, 1200, 16)
+        if status_data is None or status_data.isError():
+            return False
+
+        key_prefix = f"socket_{socket}_"
+        self.data[key_prefix + "available"] = self.decode_from_registers(
+            status_data.registers, 0, 1, self._client.DATATYPE.UINT16
+        )
+        mode3 = (
+            self.decode_from_registers(
+                status_data.registers, 1, 5, self._client.DATATYPE.STRING
             )
-            if energy_registers is None:
+            .strip("\x00")
+            .strip()
+            .upper()
+        )
+        self.data[key_prefix + "mode3state"] = mode3
+        self.data[key_prefix + "actualMaxCurrent"] = round(
+            self.decode_from_registers(
+                status_data.registers, 6, 2, self._client.DATATYPE.FLOAT32
+            ),
+            2,
+        )
+        self.data[VALID_TIME_S + str(socket)] = self.decode_from_registers(
+            status_data.registers, 8, 2, self._client.DATATYPE.UINT32
+        )
+        self.data[MAX_CURRENT_S + str(socket)] = round(
+            self.decode_from_registers(
+                status_data.registers, 10, 2, self._client.DATATYPE.FLOAT32
+            ),
+            2,
+        )
+        self.data[key_prefix + "saveCurrent"] = round(
+            self.decode_from_registers(
+                status_data.registers, 12, 2, self._client.DATATYPE.FLOAT32
+            ),
+            2,
+        )
+        self.data[key_prefix + "setpointAccounted"] = self.decode_from_registers(
+            status_data.registers, 14, 1, self._client.DATATYPE.UINT16
+        )
+        self.data[key_prefix + "chargephases"] = self.decode_from_registers(
+            status_data.registers, 15, 1, self._client.DATATYPE.UINT16
+        )
+
+        self.data[key_prefix + "carconnected"] = (
+            0 if not mode3 or mode3.startswith(("A", "E", "F")) else 1
+        )
+        self.data[key_prefix + "carcharging"] = (
+            1 if mode3.startswith(("C", "D")) and mode3.endswith("2") else 0
+        )
+        self.data[key_prefix + "chargerenabled"] = (
+            1 if self.data[MAX_CURRENT_S + str(socket)] > 0 else 0
+        )
+
+        charge_phases = self.data[key_prefix + "chargephases"]
+        if charge_phases in PHASE_SWITCH_OPTIONS:
+            self.data["usephases_S" + str(socket)] = PHASE_SWITCH_OPTIONS[charge_phases]
+
+        self._update_session_data(socket)
+        return True
+
+    async def read_modbus_data_socket_fast(self, socket):
+        if not self._socket_enabled(socket):
+            return True
+
+        fast_data = await self.read_holding_registers(socket, 320, 26)
+        if fast_data is None or fast_data.isError():
+            current_l1_data = await self.read_holding_registers(socket, 320, 2)
+            power_sum_data = await self.read_holding_registers(socket, 344, 2)
+            if (
+                current_l1_data is None
+                or current_l1_data.isError()
+                or power_sum_data is None
+                or power_sum_data.isError()
+            ):
                 return False
-     
-            self.data["socket_"+str(socket)+"_meterstate"] =  self.decode_from_registers(energy_registers,0,1,self._client.DATATYPE.UINT16)
-            # Register is UNSIGNED64 in units of 0.001s (milliseconds); convert to whole
-            # seconds to match the sensor's "s" unit. A reserved/unavailable register
-            # reads back as all-1s (NaN per the spec) - surface that as unknown rather
-            # than a bogus multi-million-year age.
-            raw_meter_age = self.decode_from_registers(energy_registers,1,4,self._client.DATATYPE.UINT64)
-            self.data["socket_"+str(socket)+"_meterAge"] = None if raw_meter_age == 0xFFFFFFFFFFFFFFFF else raw_meter_age / 1000
-            self.data["socket_"+str(socket)+"_meterType"] =  self.decode_from_registers(energy_registers,5,1,self._client.DATATYPE.UINT16)
-            
-            self.data["socket_"+str(socket)+"_VL1-N"] =   round(self.decode_from_registers(energy_registers,6,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_VL2-N"] =   round(self.decode_from_registers(energy_registers,8,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_VL3-N"] =   round(self.decode_from_registers(energy_registers,10,2,self._client.DATATYPE.FLOAT32),2)
-            
-            self.data["socket_"+str(socket)+"_VL1-L2"] =  round(self.decode_from_registers(energy_registers,12,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_VL2-L3"] =   round(self.decode_from_registers(energy_registers,14,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_VL3-L1"] =   round(self.decode_from_registers(energy_registers,16,2,self._client.DATATYPE.FLOAT32),2)
-            
-            self.data["socket_"+str(socket)+"_currentN"] =   round(self.decode_from_registers(energy_registers,18,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_currentL1"] =   round(self.decode_from_registers(energy_registers,20,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_currentL2"] =   round(self.decode_from_registers(energy_registers,22,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_currentL3"] =  round(self.decode_from_registers(energy_registers,24,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_currentSum"] =   round(self.decode_from_registers(energy_registers,26,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_powerL1"] =  round(self.decode_from_registers(energy_registers,28,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_powerL2"] =   round(self.decode_from_registers(energy_registers,30,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_powerL3"] =  round(self.decode_from_registers(energy_registers,32,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_powerSum"] =   round(self.decode_from_registers(energy_registers,34,2,self._client.DATATYPE.FLOAT32),2)
-            
-            self.data["socket_"+str(socket)+"_frequency"] =   round(self.decode_from_registers(energy_registers,36,2,self._client.DATATYPE.FLOAT32),3)
-            
-            self.data["socket_"+str(socket)+"_realPowerL1"] =   round(self.decode_from_registers(energy_registers,38,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_realPowerL2"] =   round(self.decode_from_registers(energy_registers,40,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_realPowerL3"] =   round(self.decode_from_registers(energy_registers,42,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_realPowerSum"] =   round(self.decode_from_registers(energy_registers,44,2,self._client.DATATYPE.FLOAT32),2)    
-            self.data["socket_"+str(socket)+"_apparantPowerL1"] =   round(self.decode_from_registers(energy_registers,46,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_apparantPowerL2"] =   round(self.decode_from_registers(energy_registers,48,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_apparantPowerL3"] =  round(self.decode_from_registers(energy_registers,50,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_apparantPowerSum"] =  round(self.decode_from_registers(energy_registers,52,2,self._client.DATATYPE.FLOAT32),2)
-                    
-            self.data["socket_"+str(socket)+"_reactivePowerL1"] =   round(self.decode_from_registers(energy_registers,54,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_reactivePowerL2"] =   round(self.decode_from_registers(energy_registers,56,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_reactivePowerL3"] =   round(self.decode_from_registers(energy_registers,58,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_reactivePowerSum"] =   round(self.decode_from_registers(energy_registers,60,2,self._client.DATATYPE.FLOAT32),2)
+            current_l1_registers = current_l1_data.registers
+            power_sum_registers = power_sum_data.registers
+            current_l1 = round(
+                self.decode_from_registers(
+                    current_l1_registers, 0, 2, self._client.DATATYPE.FLOAT32
+                ),
+                2,
+            )
+            real_power_sum = round(
+                self.decode_from_registers(
+                    power_sum_registers, 0, 2, self._client.DATATYPE.FLOAT32
+                ),
+                2,
+            )
+        else:
+            current_l1 = round(
+                self.decode_from_registers(
+                    fast_data.registers, 0, 2, self._client.DATATYPE.FLOAT32
+                ),
+                2,
+            )
+            real_power_sum = round(
+                self.decode_from_registers(
+                    fast_data.registers, 24, 2, self._client.DATATYPE.FLOAT32
+                ),
+                2,
+            )
 
-            self.data["socket_"+str(socket)+"_realEnergyDeliveredL1"] = round(self.decode_from_registers(energy_registers,62,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_realEnergyDeliveredL2"] =   round(self.decode_from_registers(energy_registers,66,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_realEnergyDeliveredL3"] =   round(self.decode_from_registers(energy_registers,70,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_realEnergyDeliveredSum"] =   round(self.decode_from_registers(energy_registers,74,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_realEnergyConsumedL1"] =  round(self.decode_from_registers(energy_registers,78,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_realEnergyConsumedL2"] =   round(self.decode_from_registers(energy_registers,82,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_realEnergyConsumedL3"] =  round(self.decode_from_registers(energy_registers,86,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_realEnergyConsumedSum"] =   round(self.decode_from_registers(energy_registers,90,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_apparantEnergyL1"] =  round(self.decode_from_registers(energy_registers,94,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_apparantEnergyL2"] =  round(self.decode_from_registers(energy_registers,98,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_apparantEnergyL3"] =  round(self.decode_from_registers(energy_registers,102,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_apparantEnergySum"] =  round(self.decode_from_registers(energy_registers,106,4,self._client.DATATYPE.FLOAT64),2)
+        key_prefix = f"socket_{socket}_"
+        self.data[key_prefix + "currentL1"] = current_l1
+        self.data[key_prefix + "realPowerSum"] = real_power_sum
+        return True
 
-            self.data["socket_"+str(socket)+"_reactiveEnergyL1"] =  round(self.decode_from_registers(energy_registers,110,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_reactiveEnergyL2"] =  round(self.decode_from_registers(energy_registers,114,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_reactiveEnergyL3"] =  round(self.decode_from_registers(energy_registers,118,4,self._client.DATATYPE.FLOAT64),2)
-            self.data["socket_"+str(socket)+"_reactiveEnergySum"] = round(self.decode_from_registers(energy_registers,122,4,self._client.DATATYPE.FLOAT64),2)
-                                            
-                            
-            status_data = await self.read_holding_registers(socket,1200,16)
-            if status_data is None or status_data.isError():
-                return False
-  
-            self.data["socket_"+str(socket)+"_available"] =  self.decode_from_registers(status_data.registers, 0, 1,self._client.DATATYPE.UINT16) 
-            mode3 = self.decode_from_registers(status_data.registers, 1, 5, self._client.DATATYPE.STRING).strip('\x00').strip().upper()
-            self.data["socket_"+str(socket)+"_mode3state"] = mode3
-            self.data["socket_"+str(socket)+"_actualMaxCurrent"] =   round(self.decode_from_registers(status_data.registers,6,2,self._client.DATATYPE.FLOAT32),2)
-            self.data[VALID_TIME_S+str(socket)] = self.decode_from_registers(status_data.registers, 8, 2,self._client.DATATYPE.UINT32)
-            self.data[MAX_CURRENT_S+str(socket)] =  round(self.decode_from_registers(status_data.registers,10,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_saveCurrent"] =  round(self.decode_from_registers(status_data.registers,12,2,self._client.DATATYPE.FLOAT32),2)
-            self.data["socket_"+str(socket)+"_setpointAccounted"] =  self.decode_from_registers(status_data.registers, 14, 1,self._client.DATATYPE.UINT16)
-            self.data["socket_"+str(socket)+"_chargephases"] =  self.decode_from_registers(status_data.registers, 15, 1,self._client.DATATYPE.UINT16)
+    async def read_modbus_data_socket_statistics(self, socket):
+        if not self._socket_enabled(socket):
+            return True
 
-            # IEC 61851 state families: A/E/F idle, B/C1/D1 connected but not
-            # drawing current, C2/D2 charging (PWM applied - see the Mode 3
-            # State table: only C2 and D2 have "Charging: Yes"). Endswith("2")
-            # rather than an exact-match set, to tolerate trailing junk some
-            # firmware versions have been observed to append to the string.
-            if not mode3 or mode3.startswith(("A", "E", "F")):
-                self.data["socket_"+str(socket)+"_carconnected"] = 0
-            else:
-                self.data["socket_"+str(socket)+"_carconnected"] = 1
+        statistics_data = await self.read_holding_registers(socket, 374, 4)
+        if statistics_data is None or statistics_data.isError():
+            return False
 
-            if mode3.startswith(("C", "D")) and mode3.endswith("2"):
-                self.data["socket_"+str(socket)+"_carcharging"] = 1
-            else:
-                self.data["socket_"+str(socket)+"_carcharging"] = 0
-
-            # Alfen has no dedicated enable/disable coil, so "enabled" is
-            # derived from the max-current setpoint itself (register 1210):
-            # 0 A means charging is disabled, matching the charger_enabled
-            # switch's on/off semantics below.
-            self.data["socket_"+str(socket)+"_chargerenabled"] = 1 if self.data[MAX_CURRENT_S+str(socket)] > 0 else 0
-
-            # Session tracks the whole connected period (plug-in to unplug), not
-            # just PWM-active spans, so a brief charging pause (e.g. C2->C1->C2)
-            # doesn't reset the session's accumulated Wh/duration.
-            if self.data["socket_"+str(socket)+"_carconnected"] == 0:
-                self.data.pop("socket_"+str(socket)+"_chargingStartWh", None)
-                self.data.pop("socket_"+str(socket)+"_chargingStart", None)
-            elif "socket_"+str(socket)+"_chargingStartWh" not in self.data:
-                self.data["socket_"+str(socket)+"_chargingStartWh"] = self.data["socket_"+str(socket)+"_realEnergyDeliveredSum"]
-                self.data["socket_"+str(socket)+"_chargingStart"] = self.data["stationTime"]
-
-            if "socket_"+str(socket)+"_chargingStartWh" in self.data and "socket_"+str(socket)+"_chargingStart" in self.data:
-                self.data["socket_"+str(socket)+"_currentSession"] = self.data["socket_"+str(socket)+"_realEnergyDeliveredSum"] - self.data["socket_"+str(socket)+"_chargingStartWh"]
-                self.data["socket_"+str(socket)+"_currentSessionDuration"] = self.data["stationTime"] - self.data["socket_"+str(socket)+"_chargingStart"]
-
-            if self.data["socket_"+str(socket)+"_chargephases"] in PHASE_SWITCH_OPTIONS:
-                self.data["usephases_S"+str(socket)] = PHASE_SWITCH_OPTIONS[self.data["socket_"+str(socket)+"_chargephases"]]
-        return True           
+        key_prefix = f"socket_{socket}_"
+        self.data[key_prefix + "realEnergyDeliveredSum"] = round(
+            self.decode_from_registers(
+                statistics_data.registers, 0, 4, self._client.DATATYPE.FLOAT64
+            ),
+            2,
+        )
+        self._update_session_data(socket)
+        return True
         
         
     async def read_modbus_data_product(self):

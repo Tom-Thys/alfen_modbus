@@ -11,7 +11,10 @@
           "modbus_address": "Modbus-Adresse",
           "read_scn": "SCN lesen",
           "read_socket_2": "Steckdose 2 lesen",
-          "scan_interval": "Abfrageintervall"
+          "scan_interval": "Abfrageintervall",
+          "poll_idle_interval": "Idle/disconnected polling interval",
+          "poll_connected_interval": "Connected/fast control polling interval",
+          "poll_statistics_interval": "Statistics polling interval"
         },
         "data_description": {
           "host": "Die IP-Adresse oder der Hostname deiner Alfen-Ladestation",
@@ -20,7 +23,10 @@
           "modbus_address": "Modbus-Slave-Adresse (Standard: 200)",
           "read_scn": "Smart Charging Network-Register aktivieren",
           "read_socket_2": "Steckdose 2 für Geräte mit zwei Steckdosen aktivieren",
-          "scan_interval": "Abfrageintervall in Sekunden"
+          "scan_interval": "Abfrageintervall in Sekunden",
+          "poll_idle_interval": "Polling interval in seconds when no car is connected",
+          "poll_connected_interval": "Polling interval in seconds for connected fast control (status, Current L1, real power)",
+          "poll_statistics_interval": "Polling interval in seconds for real energy statistics"
         }
       }
     },
@@ -43,14 +49,20 @@
           "port": "Port",
           "read_scn": "SCN lesen",
           "read_socket_2": "Steckdose 2 lesen",
-          "scan_interval": "Abfrageintervall"
+          "scan_interval": "Abfrageintervall",
+          "poll_idle_interval": "Idle/disconnected polling interval",
+          "poll_connected_interval": "Connected/fast control polling interval",
+          "poll_statistics_interval": "Statistics polling interval"
         },
         "data_description": {
           "host": "Die IP-Adresse oder der Hostname deiner Alfen-Ladestation",
           "port": "TCP-Port (Standard: 502)",
           "read_scn": "Smart Charging Network-Register aktivieren",
           "read_socket_2": "Steckdose 2 für Geräte mit zwei Steckdosen aktivieren",
-          "scan_interval": "Abfrageintervall in Sekunden"
+          "scan_interval": "Abfrageintervall in Sekunden",
+          "poll_idle_interval": "Polling interval in seconds when no car is connected",
+          "poll_connected_interval": "Polling interval in seconds for connected fast control (status, Current L1, real power)",
+          "poll_statistics_interval": "Polling interval in seconds for real energy statistics"
         }
       }
     },

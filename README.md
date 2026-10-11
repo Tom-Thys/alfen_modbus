@@ -58,6 +58,27 @@ Home Assistant integration for **Alfen Eve NG9xx** and **AHP** series EV charger
 3. Search for **Alfen Modbus**
 4. Enter your charger's IP address and port (default: 502)
 
+### Polling tiers (EMS-friendly defaults)
+
+You can configure three polling intervals during setup (and later via integration options):
+
+- **Idle/disconnected polling** (`poll_idle_interval`, default **30s**)
+- **Connected/fast control polling** (`poll_connected_interval`, default **5s**)
+- **Statistics polling** (`poll_statistics_interval`, default **60s**)
+
+Polling behavior:
+
+- **Startup/static path**: Product/device identification (registers `100-178`) is read at startup, not on every poll.
+- **Idle/disconnected**: Every idle interval, socket status/control (`1200-1215`) is read and station status (`1100-1105`) is refreshed.
+- **Connected/fast control**: Every connected interval, socket status/control (`1200-1215`) and lightweight measurements are read together:
+  - Current L1: `320-321`
+  - Real Power Sum: `344-345`
+  - The integration first tries one contiguous read `320-345`; if firmware rejects this, it falls back to targeted reads.
+  - When a car is connected but power remains `0 W` and max-current is below `6 A` for over 30 seconds, polling automatically slows down, while still checking connection state at least every 30 seconds.
+- **Statistics**: Every statistics interval, Real Energy Delivered Sum (`374-377`) is read, and Current Session Wh continues to be calculated locally.
+
+For EMS control loops, recommended starting values are **30s / 5s / 60s** (idle / connected / statistics).
+
 ## Localization
 
 Entity names and on/off states follow the language set in your Home Assistant profile. Currently translated: 🇬🇧 English, 🇳🇱 Dutch, 🇩🇪 German, 🇫🇷 French, 🇫🇮 Finnish, 🇳🇴 Norwegian, 🇸🇪 Swedish and 🇩🇰 Danish. Any other language falls back to English.
@@ -93,7 +114,6 @@ See the [Alfen Smart Charging Manual](https://knowledge.alfen.com/space/IN/63976
 | Control | Description |
 |---------|-------------|
 | **Max Current** | Set the maximum charging current (load balancing) |
-| **Phase Mode** | Select 1-phase (`"1"`) or 3-phase (`"3"`) charging |
 | **Charger Enabled** | Switch that stops (0 A) or resumes (allowed max current) charging via the max-current setpoint |
 | **SCN Max Current per phase** (if enabled) | Set the maximum current for the Smart Charging Network as a whole, per phase |
 
@@ -116,7 +136,6 @@ See the [Alfen Smart Charging Manual](https://knowledge.alfen.com/space/IN/63976
 | Energy entity | `sensor.alfen_real_energy_delivered_sum` | Reported in Wh; add a template sensor to convert to kWh if EVCC doesn't scale it for you. |
 | L1 / L2 / L3 current entity | `sensor.alfen_current_l1` / `_l2` / `_l3` | |
 | L1 / L2 / L3 voltage entity | `sensor.alfen_voltage_l1_n` / `_l2_n` / `_l3_n` | |
-| Phase switching entity | `select.alfen_usable_phases` | Options are the literal values `"1"` and `"3"`. |
 
 With **Read Socket 2** enabled, socket 2's entity IDs get a `_socket_2` suffix (e.g. `sensor.alfen_current_l1_socket_2`, `switch.alfen_charger_enabled_socket_2`).
 
