@@ -73,7 +73,7 @@ CONFIG_SCHEMA = vol.Schema(
     {DOMAIN: vol.Schema({cv.slug: ALFEN_MODBUS_SCHEMA})}, extra=vol.ALLOW_EXTRA
 )
 
-PLATFORMS = ["binary_sensor", "number", "select", "sensor", "switch"]
+PLATFORMS = ["binary_sensor", "number", "sensor", "switch"]
 
 type AlfenConfigEntry = ConfigEntry[AlfenModbusHub]
 
@@ -217,6 +217,7 @@ class AlfenModbusHub:
         self._station_data_loaded = False
         self._last_status_poll = 0.0
         self._last_statistics_poll = 0.0
+        self._zero_power_since = None
 
     @callback
     def async_add_alfen_sensor(self, update_callback, refresh_callback = None):
@@ -415,11 +416,14 @@ class AlfenModbusHub:
         self._update_station_time()
 
         now = asyncio.get_running_loop().time()
+        self._update_zero_power_timer(now)
         status_interval = (
             self._poll_connected_interval
             if self._any_car_connected()
             else self._poll_idle_interval
         )
+        if self._should_use_low_power_interval(now):
+            status_interval = min(self._poll_idle_interval, 30)
         status_due = (
             self._last_status_poll == 0.0
             or now - self._last_status_poll >= status_interval
@@ -479,6 +483,36 @@ class AlfenModbusHub:
     def _any_car_connected(self):
         sockets = [1, 2] if self.has_socket_2 else [1]
         return any(self.data.get(f"socket_{socket}_carconnected") == 1 for socket in sockets)
+
+    def _connected_sockets(self):
+        sockets = [1, 2] if self.has_socket_2 else [1]
+        return [socket for socket in sockets if self.data.get(f"socket_{socket}_carconnected") == 1]
+
+    def _is_low_power_connected(self):
+        connected_sockets = self._connected_sockets()
+        if not connected_sockets:
+            return False
+
+        for socket in connected_sockets:
+            max_key = MAX_CURRENT_S + str(socket)
+            power_key = f"socket_{socket}_realPowerSum"
+            if max_key not in self.data or power_key not in self.data:
+                return False
+            if self.data[max_key] >= 6 or abs(self.data[power_key]) > 0.1:
+                return False
+        return True
+
+    def _update_zero_power_timer(self, now):
+        if self._is_low_power_connected():
+            if self._zero_power_since is None:
+                self._zero_power_since = now
+        else:
+            self._zero_power_since = None
+
+    def _should_use_low_power_interval(self, now):
+        if self._zero_power_since is None:
+            return False
+        return now - self._zero_power_since >= 30
 
     def _update_session_data(self, socket):
         prefix = f"socket_{socket}_"

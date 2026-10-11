@@ -74,6 +74,7 @@ Polling behavior:
   - Current L1: `320-321`
   - Real Power Sum: `344-345`
   - The integration first tries one contiguous read `320-345`; if firmware rejects this, it falls back to targeted reads.
+  - When a car is connected but power remains `0 W` and max-current is below `6 A` for over 30 seconds, polling automatically slows down, while still checking connection state at least every 30 seconds.
 - **Statistics**: Every statistics interval, Real Energy Delivered Sum (`374-377`) is read, and Current Session Wh continues to be calculated locally.
 
 For EMS control loops, recommended starting values are **30s / 5s / 60s** (idle / connected / statistics).
@@ -113,7 +114,6 @@ See the [Alfen Smart Charging Manual](https://knowledge.alfen.com/space/IN/63976
 | Control | Description |
 |---------|-------------|
 | **Max Current** | Set the maximum charging current (load balancing) |
-| **Phase Mode** | Select 1-phase (`"1"`) or 3-phase (`"3"`) charging |
 | **Charger Enabled** | Switch that stops (0 A) or resumes (allowed max current) charging via the max-current setpoint |
 | **SCN Max Current per phase** (if enabled) | Set the maximum current for the Smart Charging Network as a whole, per phase |
 
@@ -136,7 +136,6 @@ See the [Alfen Smart Charging Manual](https://knowledge.alfen.com/space/IN/63976
 | Energy entity | `sensor.alfen_real_energy_delivered_sum` | Reported in Wh; add a template sensor to convert to kWh if EVCC doesn't scale it for you. |
 | L1 / L2 / L3 current entity | `sensor.alfen_current_l1` / `_l2` / `_l3` | |
 | L1 / L2 / L3 voltage entity | `sensor.alfen_voltage_l1_n` / `_l2_n` / `_l3_n` | |
-| Phase switching entity | `select.alfen_usable_phases` | Options are the literal values `"1"` and `"3"`. |
 
 With **Read Socket 2** enabled, socket 2's entity IDs get a `_socket_2` suffix (e.g. `sensor.alfen_current_l1_socket_2`, `switch.alfen_charger_enabled_socket_2`).
 
